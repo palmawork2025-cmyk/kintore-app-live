@@ -184,6 +184,15 @@ body{padding-bottom:80px;}
 .volume-label{font-size:12px;color:var(--text3);}
 .volume-val{font-size:14px;font-weight:700;color:var(--accent2);}
 
+/* アップ/維持 切り替え */
+.progtype-row{display:flex;gap:8px;margin-bottom:12px;}
+.progtype-btn{
+  flex:1;padding:9px 4px;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;
+  border:1px solid var(--border);background:var(--card2);color:var(--text2);transition:all .2s;
+}
+.progtype-btn.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent;}
+.progtype-btn:active{transform:scale(0.96);}
+
 /* 種目ごと削除ボタン */
 .del-exercise-btn{
   width:100%;padding:10px;border-radius:10px;
@@ -485,12 +494,19 @@ body{padding-bottom:80px;}
   </div>
   <div id="exerciseList"></div>
   <button class="save-btn" onclick="saveTraining()">📥 トレーニングを保存</button>
+  <button class="add-item-btn" style="width:100%;padding:12px;font-size:13px;margin-top:10px" onclick="openFixedSetNameModal()">📦 今の記録を固定セットとして保存</button>
 
   <div style="height:24px"></div>
 
   <!-- 部位選択（今日はどこを鍛えるか） -->
   <div class="section-title">今日はどこを鍛えますか？</div>
   <div class="bodypart-chips" id="bodypartChips"></div>
+
+  <!-- 固定セット（複数種目をまとめて保存・一括追加） -->
+  <div class="exercise-list-panel" id="fixedSetPanel">
+    <div class="exercise-list-panel-title">📦 固定セットから追加</div>
+    <div id="fixedSetListItems"></div>
+  </div>
 
   <!-- 種目一覧パネル（各行に「追加」ボタンと「デフォルト編集」ボタン） -->
   <div class="exercise-list-panel">
@@ -877,6 +893,20 @@ body{padding-bottom:80px;}
   </div>
 </div>
 
+<!-- 固定セット保存モーダル -->
+<div class="modal-overlay" id="fixedSetNameModal" onclick="closeFixedSetNameModalOutside(event)">
+  <div class="modal">
+    <div class="modal-title">📦 固定セットとして保存</div>
+    <div class="modal-subtitle">今の記録内容をひとまとめにして、次回ワンタップで呼び出せます</div>
+    <div class="modal-field-label">セット名</div>
+    <input class="text-field" id="fixedSetNameInput" maxlength="20" placeholder="例：胸の日セット">
+    <div class="modal-btns">
+      <button class="modal-btn secondary" onclick="closeFixedSetNameModal()">キャンセル</button>
+      <button class="modal-btn primary" onclick="confirmSaveFixedSet()">保存する</button>
+    </div>
+  </div>
+</div>
+
 <!-- CONFIRM DIALOG -->
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-dialog">
@@ -1202,6 +1232,110 @@ function renderCustomMenuItems() {
 }
 
 // =============================================================
+// 固定セット（複数種目をまとめて保存・一括追加）
+// localStorage key: 'fixedSets' → [{id, name, exercises:[{name,weight,sets,reps,isCardio,noWeight,km}]}]
+// 献立アプリの「よく使うメニュー」のような感覚で、今日組んだ種目一式をまとめて保存し、
+// 次回はワンタップで全種目を一括追加できるようにする。
+// =============================================================
+function loadFixedSets() { return getStorage('fixedSets', []); }
+function saveFixedSetsList(list) { setStorage('fixedSets', list); }
+
+function renderFixedSetItems() {
+  const container = document.getElementById('fixedSetListItems');
+  if (!container) return;
+  const sets = loadFixedSets();
+  if (sets.length === 0) {
+    container.innerHTML = `
+      <div class="exercise-list-item">
+        <div>
+          <div class="exercise-list-name">まだ固定セットがありません</div>
+          <div class="exercise-list-sub">記録を作ってから「固定セットとして保存」で登録できます</div>
+        </div>
+      </div>`;
+    return;
+  }
+  container.innerHTML = sets.map(s => {
+    const sub = s.exercises.map(e => e.name).join('・');
+    return `
+    <div class="exercise-list-item">
+      <div>
+        <div class="exercise-list-name">📦 ${escHtml(s.name)}</div>
+        <div class="exercise-list-sub">${escHtml(sub)}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="menu-del-btn" onclick="confirmDeleteFixedSet('${escAttr(s.id)}')">削除</button>
+        <button class="add-item-btn" onclick="addFixedSet('${escAttr(s.id)}')">追加</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// セット内の全種目を、現在の記録リストにまとめて追加する
+function addFixedSet(id) {
+  const set = loadFixedSets().find(s => s.id === id);
+  if (!set) return;
+  set.exercises.forEach(e => {
+    state.currentExercises.push({
+      name: e.name,
+      weight: e.weight, sets: e.sets, reps: e.reps,
+      isCardio: !!e.isCardio, noWeight: !!e.noWeight, km: e.km || 0,
+      progressType: 'up',
+    });
+  });
+  renderExercises();
+  showSaved(`「${set.name}」を追加しました`);
+}
+
+function confirmDeleteFixedSet(id) {
+  const set = loadFixedSets().find(s => s.id === id);
+  const name = set ? set.name : 'セット';
+  showConfirm('固定セットを削除', `「${name}」を削除します。`, () => {
+    saveFixedSetsList(loadFixedSets().filter(s => s.id !== id));
+    renderFixedSetItems();
+    showSaved('削除しました');
+  });
+}
+
+// 今の記録を固定セットとして保存するモーダル
+function openFixedSetNameModal() {
+  if (state.currentExercises.length === 0) {
+    showSaved('先に種目を追加してください');
+    return;
+  }
+  document.getElementById('fixedSetNameInput').value = '';
+  document.getElementById('fixedSetNameModal').classList.add('open');
+}
+function closeFixedSetNameModal() {
+  document.getElementById('fixedSetNameModal').classList.remove('open');
+}
+function closeFixedSetNameModalOutside(e) {
+  if (e.target === document.getElementById('fixedSetNameModal')) closeFixedSetNameModal();
+}
+function confirmSaveFixedSet() {
+  const nameEl = document.getElementById('fixedSetNameInput');
+  const name = nameEl.value.trim();
+  if (!name) {
+    nameEl.style.borderColor = 'var(--red)';
+    setTimeout(() => { nameEl.style.borderColor = ''; }, 1200);
+    return;
+  }
+  const sets = loadFixedSets();
+  const id = 'set_' + Date.now();
+  sets.push({
+    id, name,
+    exercises: state.currentExercises.map(ex => ({
+      name: ex.name,
+      weight: ex.weight, sets: ex.sets, reps: ex.reps,
+      isCardio: !!ex.isCardio, noWeight: !!ex.noWeight, km: ex.km || 0,
+    })),
+  });
+  saveFixedSetsList(sets);
+  closeFixedSetNameModal();
+  renderFixedSetItems();
+  showSaved(`「${name}」を固定セットとして保存しました`);
+}
+
+// =============================================================
 // 重量アップ・回数アップの進捗管理
 // localStorage key: 'progression' → {種目名: {step:0-2, baseReps}}
 // サイクル: baseReps回 → baseReps+2回 → baseReps+4回 → (確認)+2.5kg → baseReps回
@@ -1226,6 +1360,7 @@ function evaluateProgressionOnSave() {
   const all = getStorage('progression', {});
   state.currentExercises.forEach(ex => {
     if (ex.isCardio || ex.noWeight) return;
+    if (ex.progressType === 'maintain') return; // 「維持」指定の種目は進捗評価の対象外
     const def = getExerciseDefault(ex.name);
     if (!all[ex.name]) all[ex.name] = {step:0, baseReps: def.reps};
     const p = all[ex.name];
@@ -1370,6 +1505,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshListSubtexts(); // 【修正5】一覧サブテキスト初期化
   updateTrainingDateNav(); // 【修正2】日付ナビ初期化
   renderCustomMenuItems(); // 固定メニュー一覧を反映
+  renderFixedSetItems(); // 固定セット一覧を反映
   renderTrainingBodypartChips(); // 部位選択チップを初期化
   applyBodyPartFilter();
   updateGraph();
@@ -1697,7 +1833,12 @@ function buildExerciseCard(ex, idx) {
   } else {
     const vol  = (ex.weight * ex.sets * ex.reps).toFixed(0);
     const prog = getProgressionInfo(ex.name);
+    const progType = ex.progressType === 'maintain' ? 'maintain' : 'up';
     bodyHTML = `
+      <div class="progtype-row">
+        <button class="progtype-btn ${progType==='up'?'active':''}" onclick="setExProgressType(${idx},'up')">🔺 アップを狙う</button>
+        <button class="progtype-btn ${progType==='maintain'?'active':''}" onclick="setExProgressType(${idx},'maintain')">➡️ 維持</button>
+      </div>
       <div class="exercise-controls">
         <div class="ctrl-group">
           <div class="ctrl-label">重量 (kg)</div>
@@ -1756,6 +1897,20 @@ function toggleCard(idx) {
   document.getElementById(`excard-${idx}`).classList.toggle('expanded');
 }
 
+// アップ/維持の切り替え（この記録が重量アップを狙うものか、現状維持かを指定する）
+function setExProgressType(idx, type) {
+  const ex = state.currentExercises[idx];
+  if (!ex) return;
+  ex.progressType = type;
+  const card = document.getElementById(`excard-${idx}`);
+  if (!card) return;
+  const btns = card.querySelectorAll('.progtype-btn');
+  if (btns.length === 2) {
+    btns[0].classList.toggle('active', type === 'up');
+    btns[1].classList.toggle('active', type === 'maintain');
+  }
+}
+
 // =============================================================
 // CHANGE EXERCISE VALUES
 // =============================================================
@@ -1799,6 +1954,7 @@ function addExerciseFromList(name) {
     isCardio: def.isCardio,
     noWeight: def.noWeight,
     km:       0,
+    progressType: 'up',
   });
   renderExercises();
   // 【修正1】自動スクロールを廃止。追加後はカードを展開するだけ（位置は維持）
@@ -1831,6 +1987,7 @@ function addFreeExercise() {
     isCardio: def.isCardio,
     noWeight: def.noWeight,
     km:       0,
+    progressType: 'up',
   });
   nameEl.value = '';
   renderExercises();
@@ -2325,20 +2482,34 @@ function updateAlerts() {
     data.forEach(ex => {
       if (ex.isCardio || ex.noWeight) return;
       if (!exHistory[ex.name]) exHistory[ex.name]=[];
-      exHistory[ex.name].push({weight:ex.weight||0, reps:ex.reps||0, sets:ex.sets||0});
+      exHistory[ex.name].push({weight:ex.weight||0, reps:ex.reps||0, sets:ex.sets||0, progressType: ex.progressType === 'maintain' ? 'maintain' : 'up'});
     });
   });
   const alerts=[];
   Object.entries(exHistory).forEach(([name,records]) => {
-    if (records.length<7) return;
-    const last7 = records.slice(-7);
+    // 【修正】重量を下げた場合、これまでは条件から外れて何も表示されなかった。
+    // 直近の重量変化を必ず検知して通知することで、下げた事実がアラートに反映されるようにする。
+    if (records.length>=2) {
+      const latest = records[records.length-1];
+      const prev   = records[records.length-2];
+      if (latest.weight < prev.weight) {
+        alerts.push({type:'info',icon:'📉',
+          title:`重量ダウン: ${name}`,
+          msg:`前回 ${prev.weight}kg → 今回 ${latest.weight}kg に下げました。無理せず今の重量で継続しましょう。`});
+      }
+    }
+    // 停滞検知は「🔺 アップを狙う」を選んだ記録だけを対象にする。
+    // 「➡️ 維持」を選んだ記録は意図的な現状維持なので、停滞警告の対象から除外する。
+    const upRecords = records.filter(r => r.progressType !== 'maintain');
+    if (upRecords.length<7) return;
+    const last7 = upRecords.slice(-7);
     const first = last7[0];
     const noChange = last7.every(r => r.weight===first.weight && r.reps===first.reps && r.sets===first.sets);
     if (noChange) {
       const prog = getProgressionInfo(name);
       alerts.push({type:'warning',icon:'⚠️',
         title:`停滞の可能性: ${name}`,
-        msg:`現状: ${first.weight}kg × ${first.reps}回 × ${first.sets}セットが直近7回続いています。`
+        msg:`現状: ${first.weight}kg × ${first.reps}回 × ${first.sets}セットが「アップを狙う」設定で直近7回続いています。`
           + `次に取るべき行動: 現在の目標（${prog.targetReps}回 × ${prog.requiredSets}セット）のクリアを目指し、`
           + `回数を1〜2回増やしてみましょう。`});
     }
@@ -2368,6 +2539,7 @@ function backupData() {
     customDefaults: loadCustomDefaults(),
     progression: getStorage('progression', {}),
     customMenus: loadCustomMenus(),
+    fixedSets: loadFixedSets(),
     settings: getSettings(),
   };
   getAllTrainingDates().forEach(d => { data.training[d] = getTraining(d); });
@@ -2424,6 +2596,7 @@ function performRestore(data) {
   saveCustomDefaults(data.customDefaults || {});
   setStorage('progression', data.progression || {});
   saveCustomMenus(data.customMenus || []);
+  saveFixedSetsList(data.fixedSets || []);
   setSettings(data.settings || {priorityBodyPart:'胸', heightCm:175});
 
   tempMetrics = {};
@@ -2437,6 +2610,7 @@ function performRestore(data) {
   loadTrainingForDate(state.selectedDate);
   refreshListSubtexts();
   renderCustomMenuItems();
+  renderFixedSetItems();
   renderTrainingBodypartChips();
   applyBodyPartFilter();
   updateGraph();
